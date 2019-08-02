@@ -204,25 +204,26 @@ viewText styles string =
     Element.el (stylesFor styles) (Element.text string)
 
 
+listIf : List ( Bool, thing ) -> List thing
+listIf things =
+    List.filterMap
+        (\( on, x ) ->
+            if on then
+                Just x
+
+            else
+                Nothing
+        )
+        things
+
+
 stylesFor : { a | bold : Bool, italic : Bool, strike : Bool } -> List (Element.Attribute b)
 stylesFor styles =
-    [ if styles.bold then
-        Just Font.bold
-
-      else
-        Nothing
-    , if styles.italic then
-        Just Font.italic
-
-      else
-        Nothing
-    , if styles.strike then
-        Just Font.strike
-
-      else
-        Nothing
-    ]
-        |> List.filterMap identity
+    listIf
+        [ ( styles.bold, Font.bold )
+        , ( styles.italic, Font.italic )
+        , ( styles.strike, Font.strike )
+        ]
 
 
 
