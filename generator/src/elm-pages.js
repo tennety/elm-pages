@@ -7,6 +7,7 @@ const glob = require("glob");
 const develop = require("./develop.js");
 const chokidar = require("chokidar");
 const matter = require("gray-matter");
+const generate = require("./generate.js")
 
 const contentGlobPath = "content/**/*.emu";
 
@@ -21,8 +22,18 @@ function parseMarkdown(path, fileContents) {
   return { path, metadata: JSON.stringify(data), body: content };
 }
 
+
 function run() {
   console.log("Running elm-pages...");
+
+  // New File Generation
+  // Uncomment to generate the new file
+  // const myElmFile = generate.run("site/content/")
+  // fs.mkdir('./site/my', { recursive: true }, (err) => {
+  //   if (err) throw err;
+  // });
+  // fs.writeFileSync("./site/my/My.elm", myElmFile);
+
   const content = glob.sync(contentGlobPath, {}).map(unpackFile);
   const markdownContent = glob
     .sync("content/**/*.md", {})
@@ -64,7 +75,7 @@ function run() {
     } else {
       develop.run(
         { routes: contents.routes, fileContents: contents.fileContents },
-        () => {}
+        () => { }
       );
     }
   });
@@ -82,7 +93,7 @@ function startWatchIfNeeded() {
         },
         ignoreInitial: true
       })
-      .on("all", function(event, filePath) {
+      .on("all", function (event, filePath) {
         console.log(`Rerunning for ${filePath}...`);
         run();
         console.log("Done!");
