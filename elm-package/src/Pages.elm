@@ -1,4 +1,4 @@
-module Pages exposing (Flags, Parser, Program, application)
+module Pages exposing (Document, Flags, Parser, Program, application)
 
 import Browser
 import Browser.Navigation
@@ -15,6 +15,13 @@ import Pages.Parser exposing (Page)
 import Result.Extra
 import Task exposing (Task)
 import Url exposing (Url)
+
+
+type alias Document metadata body =
+    { ext : String
+    , metadata : Json.Decode.Decoder metadata
+    , body : metadata -> String -> body
+    }
 
 
 type alias Content =
