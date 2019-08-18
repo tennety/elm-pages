@@ -1,32 +1,29 @@
-
-const { version } = require("../../package.json");
 const fs = require("fs");
 const glob = require("glob");
-const chokidar = require("chokidar");
 const matter = require("gray-matter");
 const path = require('path');
 
 
-const base = "site/content/"
 
-function askForDocumentDefinitions() {
-    // Ask their current program for document definitions
+function askForDocumentDefinitions(dir) {
+    // TODO: Ask their current Elm program for document definitions
+    // we're stubbing in defaults for now.
     return [{ ext: "md", metadata: matter }, { ext: "emu", metadata: matter }]
 }
 
-function scan(documentDefinitions) {
+function scan(dir, documentDefinitions) {
     // scan content directory for documents
     const content = glob
-        .sync(base + "**/*", {})
+        .sync(dir + "**/*", {})
         .filter(imagePath => !fs.lstatSync(imagePath).isDirectory())
-        .map(unpackFile(documentDefinitions));
+        .map(unpackFile(dir, documentDefinitions));
     return content
 }
 
-function unpackFile(documents) {
+function unpackFile(dir, documents) {
     return (filepath) => {
         const fullPath = filepath
-        var relative = filepath.slice(base.length)
+        var relative = filepath.slice(dir.length)
         var foundMetadata = null
         for (var i = 0; i < documents.length; i++) {
             if (relative.endsWith(documents[i].ext)) {
@@ -63,50 +60,51 @@ function generate(scanned) {
     // Assets ->
     //     Record
 
-    var docRoutes = { "_connections": {} }
+
     var routeRecord = {}
     var assetsRecord = {}
-
     var allRoutes = []
     var urlParser = []
     var routeToMetadata = []
+    var routeToExt = []
+    var routeToSource = []
     for (var i = 0; i < scanned.length; i++) {
+        var pathFragments = scanned[i].path
+        //remove extesion and split into fragments
+        pathFragments = pathFragments.replace(/\.[^/.]+$/, "").split(path.sep)
+        const ext = path.extname(scanned[i].path)
         if (scanned[i].document) {
-            var split = scanned[i].path
-            //remove extesion and split
-            split = split.replace(/\.[^/.]+$/, "").split(path.sep)
-            const elmType = split.map(toPascalCase).join("")
-            // captureRoutes(split, docRoutes)
-            captureRouteRecord(split, elmType, routeRecord)
+            const elmType = pathFragments.map(toPascalCase).join("")
+            captureRouteRecord(pathFragments, elmType, routeRecord)
             allRoutes.push(elmType)
-            urlParser.push(formatUrlParser(elmType, split))
-            routeToMetadata.push(formatUrlToMetadata(elmType, scanned[i].metadata))
+            urlParser.push(formatUrlParser(elmType, pathFragments))
+            routeToMetadata.push(formatCaseInstance(elmType, scanned[i].metadata))
+            routeToExt.push(formatCaseInstance(elmType, ext))
+            routeToSource.push(formatCaseInstance(elmType, scanned[i].path))
 
         } else {
-            var split = scanned[i].path
-            //remove extesion and split
-            split = split.replace(/\.[^/.]+$/, "").split(path.sep)
-            captureRouteRecord(split, scanned[i].path, assetsRecord)
+            captureRouteRecord(pathFragments, scanned[i].path, assetsRecord)
         }
 
     }
-    const full = formatFullElmFile({
-        exposing: "(Route, all, pages, parser, routeToString, toMetadata)",
+    return formatFullElmFile({
+        exposing: "(simple, Route, all, pages, parser, routeToString, assets)",
         routes: toFlatRouteType(allRoutes),
         allRoutes: formatAsElmList("all", allRoutes),
         routeRecord: toElmRecord("pages", routeRecord, true),
         urlParser: formatAsElmUrlParser(urlParser),
         urlToString: formatAsElmUrlToString(urlParser),
-        routeToMetadata: formatAsMeta(routeToMetadata),
+        routeToMetadata: formatCaseStatement("toMetadata", routeToMetadata),
+        routeToDocExtension: formatCaseStatement("toExt", routeToExt),
+        routeToSource: formatCaseStatement("toSourcePath", routeToSource),
         assetsRecord: toElmRecord("assets", assetsRecord, false),
     })
-    console.log(full)
 }
 
-function run() {
-    const documents = askForDocumentDefinitions()
-    const scanned = scan(documents)
-    generate(scanned)
+function run(dir) {
+    const documents = askForDocumentDefinitions(dir)
+    const scanned = scan(dir, documents)
+    return generate(scanned)
 }
 
 module.exports = { run };
@@ -164,91 +162,12 @@ function captureRouteRecord(pieces, elmType, record) {
     }
 }
 
-function toRouteType(captured) {
-
-    var strings = []
-    // Generate type definitions
-    for (const key of Object.keys(captured)) {
-        if (key == "_connections") {
-            continue
-        }
-        var str = "type " + key
-        var start = true
-        for (i in captured[key]) {
-            if (start) {
-                start = false
-                str = str + "\n    = " + captured[key][i]
-            } else {
-                str = str + "\n    | " + captured[key][i]
-            }
-        }
-        if (key in captured["_connections"]) {
-            conns = Array.from(captured["_connections"][key].keys())
-            for (i in conns) {
-                if (start) {
-                    start = false
-                    str = str + "\n    = " + conns[i] + " " + conns[i]
-                } else {
-                    str = str + "\n    | " + conns[i] + " " + conns[i]
-                }
-            }
-        }
-        strings.push(str)
-    }
-
-    return strings.join("\n\n")
-}
-
-function captureRoutes(route, captured) {
-    if (route == []) {
-        return
-    }
-
-    var group = "Route"
-    for (var i = 0; i < route.length; i++) {
-        var name = toPascalCase(route[i])
-        if (i + 1 == route.length) {
-            if (name == "Index") {
-                if (group != "Route") {
-                    name = group + name
-                }
-            }
-            if (group in captured) {
-                captured[group].push(name)
-            } else {
-                captured[group] = [name]
-            }
-
-        } else {
-            if (group in captured["_connections"]) {
-                captured["_connections"][group].add(name)
-            } else {
-                captured["_connections"][group] = new Set()
-                captured["_connections"][group].add(name)
-            }
-            group = name
-        }
-    }
-}
-function toPascalCase(str) {
-    var pascal = str.replace(/(\-\w)/g, function (m) { return m[1].toUpperCase(); });
-    return pascal.charAt(0).toUpperCase() + pascal.slice(1)
-}
-function toCamelCase(str) {
-    var pascal = str.replace(/(\-\w)/g, function (m) { return m[1].toUpperCase(); });
-    return pascal.charAt(0).toLowerCase() + pascal.slice(1)
-}
-
 function formatAsElmList(name, items) {
     var formatted = items.join("\n    , ")
 
     var signature = name + " : List Route\n"
 
     return signature + name + " =\n    [ " + formatted + "\n    ]"
-}
-
-function formatPathToRouteType(filepathPieces) {
-    return filepathPieces.map(toPascalCase).join(" ")
 }
 
 function literalUrl(piece) {
@@ -259,18 +178,16 @@ function quote(str) {
     return `"${str}"`
 }
 
-function formatUrlToMetadata(elmType, metadata) {
+function formatCaseInstance(elmType, metadata) {
     return `        ${elmType} ->
             """${metadata}"""`
 }
 
-function formatAsMeta(routeToMetadata) {
-    return `toMetadata: Route -> String
-toMetadata route =
+function formatCaseStatement(name, branches) {
+    return `${name} : Route -> String
+${name} route =
     case route of
-${routeToMetadata.join("\n\n")}
-
-`
+${branches.join("\n\n")}`
 }
 
 
@@ -293,7 +210,8 @@ function formatUrlParser(elmType, filepathPieces) {
 function formatAsElmUrlToString(pieces) {
     var toString = pieces.map((p) => p.toString).join("\n\n")
 
-    return `routeToString route =
+    return `routeToString : Route -> String
+routeToString route =
     case route of
 ${ toString} `
 }
@@ -306,13 +224,269 @@ function formatAsElmUrlParser(pieces) {
 }
 
 function formatFullElmFile(data) {
-    const file = `module Pages.My exposing ${data.exposing}
+    return `port module Pages.My exposing ${data.exposing}
 
-{ -| -}
+{-| -}
 
+import Browser
+import Browser.Navigation
+import Json.Encode
+import Pages
 import Url exposing (Url)
-import Url.Parser as Url exposing((</>), Parser, s, string)
+import Url.Parser as Url exposing ((</>), Parser, s, string)
+import Http
 
+{-| Used to tell the compile-time renderer what html headers we want for a page.
+
+Can be used to
+
+-}
+port toCompileTimeRenderer : Json.Encode.Value -> Cmd msg
+
+
+simple :
+    { init : List metadata -> ( model, Cmd msg )
+    , view : Maybe (Page metadata body) -> model -> Html msg
+    , update : msg -> model -> ( model, Cmd msg )
+    , subscriptions : model -> Sub msg
+    , documents : List (Pages.Document metadata body)
+    }
+    -> Platform.Program (Flags userFlags) (Model userModel userMsg metadata body) (Msg userMsg metadata body)
+simple config =
+    Browser.application
+        { init =
+            \\flags url key ->
+                ( emptyCache key
+                , config.init []
+                )
+        , view =
+            \\( cached, model ) ->
+                view cached.current model
+        , update =
+            \\msg (Model model) ->
+                update config.documents config.update msg model
+                    |> Tuple.mapFirst Model
+        , subscriptions =
+            \\(Model model) ->
+                Sub.batch
+                    [ config.subscriptions model.userModel
+                        |> Sub.map UserMsg
+                    , compileTimeRendererWants CompileTimeRendererWants
+                    ]
+        , onUrlChange = UrlChanged
+        , onUrlRequest = LinkClicked
+        }
+
+
+emptyCache key =
+    { current = Nothing
+    , previous = []
+    , key = key
+    }
+
+
+type alias Page metadata body =
+    { route : Route
+    , metadata : metadata
+    , body : RemoteData body
+    }
+
+
+type RemoteData data
+    = NotAsked
+    | Loading
+    | Failure data
+    | Success data
+
+
+type alias Cache metadata body =
+    -- current is Nothing if the current url is a 404
+    -- then dev who is using pages can decide what to show
+    { current : Maybe (Page metadata body)
+    , previous : List (Page metadata body)
+    , key : Browser.Navigation.Key
+    }
+
+
+loadPageBody : Route -> body -> Cache metadata body -> Cache metadata body
+loadPageBody route body cache =
+    let
+        loadBody page =
+            if page.route == route then
+                { page | body = Success body }
+
+            else
+                page
+    in
+    { cache
+        | current = Maybe.map loadBody cache.current
+        , previous = List.map loadBody cache.previous
+    }
+    
+
+gotoCachedRoute : Route -> List (Document metadata body) -> Cache metadata body -> ( Cache metadata body, Cmd Msg )
+gotoCachedRoute route documents cache =
+    let
+        currentPageIsSame =
+            case cache.current of
+                Nothing ->
+                    False
+
+                Just current ->
+                    current.route == route
+    in
+    if currentPageIsSame then
+        ( cache, Cmd.none )
+
+    else
+        case getDocument route documents of
+            Nothing ->
+                -- TODO, report error
+                ( cache, Cmd.none )
+
+            Just doc ->
+                let
+                    matchPage page ( found, prevs ) =
+                        case found of
+                            Nothing ->
+                                if page.route == route then
+                                    ( Just page, prevs )
+
+                                else
+                                    ( Nothing, page :: prevs )
+
+                            Just _ ->
+                                ( found, page :: prevs )
+
+                    ( maybeExistingPage, newPrevious ) =
+                        List.foldl matchPage ( Nothing, [] ) cache.previous
+
+                    newCurrentPage =
+                        Maybe.withDefault
+                            { route = route
+                            , metadata = doc.metadata (toMetadata route)
+                            , body = Loading
+                            }
+                            maybeExistingPage
+                in
+                ( { cache
+                    | current = newCurrentPage
+                    , previous = List.reverse newPrevious
+                    }
+                , case newCurrentPage.body of
+                    Loading ->
+                        getPage GotPage route doc
+
+                    _ ->
+                        Cmd.none
+                )
+
+
+getPage toMsg route doc =
+    Http.get
+        { url = toSourcePath route
+        , expect =
+            Http.expectStringResponse toMsg <|
+                \\response ->
+                    case response of
+                        Http.BadUrl_ url ->
+                            Err (Http.BadUrl url)
+
+                        Http.Timeout_ ->
+                            Err Http.Timeout
+
+                        Http.NetworkError_ ->
+                            Err Http.NetworkError
+
+                        Http.BadStatus_ metadata body ->
+                            Err (Http.BadStatus metadata.statusCode)
+
+                        Http.GoodStatus_ metadata body ->
+                            case doc.body (doc.metadata (toMetadata route)) body of
+                                Ok value ->
+                                    Ok value
+
+                                Err err ->
+                                    Err (Http.BadBody "Unable to parse body.")
+        }
+
+
+getDocument : Route -> List (Document metadata body) -> Maybe (Document metadata body)
+getDocument route docs =
+    let
+        ext =
+            toExt route
+    in
+    List.filter (\\doc -> doc.ext == ext) docs
+        |> List.head
+
+
+type Msg userMsg metadata body
+    = LinkClicked Browser.UrlRequest
+    | UrlChanged Url.Url
+    | UserMsg userMsg
+    | GotPageBody Route (Result Http.Error body)
+
+
+update :
+    List (Document metadata body)
+    -> (userMsg -> model -> ( model, Cmd userMsg ))
+    -> Msg userMsg metadata body
+    -> ( Cache metadata body, Model )
+    -> ( ( Cache metadata body, Model ), Cmd Msg )
+update documents userUpdate msg (( cache, model ) as existing) =
+    case msg of
+        UserMsg userMsg ->
+            let
+                ( userModel, userCmd ) =
+                    userUpdate userMsg model
+            in
+            ( ( cache, userModel )
+            , Cmd.map UserMsg userCmd
+            )
+
+        LinkClicked urlRequest ->
+            case urlRequest of
+                Browser.Internal url ->
+                    let
+                        navigatingToSamePage =
+                            url.path == model.url.path
+                    in
+                    if navigatingToSamePage then
+                        -- this is a workaround for an issue with anchor fragment navigation
+                        -- see https://github.com/elm/browser/issues/39
+                        ( existing, Browser.Navigation.load (Url.toString url) )
+
+                    else
+                        ( existing, Browser.Navigation.pushUrl model.key (Url.toString url) )
+
+                Browser.External href ->
+                    ( existing, Browser.Navigation.load href )
+
+        UrlChanged url ->
+            let
+                ( newCache, loadPageIfNecessary ) =
+                    gotoCachedRoute (parser url) documents cache
+            in
+            ( ( newCache, model )
+            , loadPageIfNecessary
+            )
+
+        GotPageBody route newPageBodyResult ->
+            case newPageBodyResult of
+                Ok newPageBody ->
+                    ( (loadPageBody route newPageBody cache, model)
+                    , Cmd.none
+                    )
+
+                Err _ ->
+                    -- TODO handle error
+                    -- If in dev mode, display in view
+                    -- if in production, optionally log to server?
+                    ( existing, Cmd.none )
+
+
+{- PAGES -}
 
 ${ data.routes}
 
@@ -332,15 +506,27 @@ ${ data.urlToString}
 ${ data.routeToMetadata}
 
 
+${ data.routeToDocExtension}
+
+
+${ data.routeToSource}
+
+
+{- ASSETS -}
+
+
 ${ data.assetsRecord}
 
 `
-    return file
-
 }
 
+// String case handlers
 
-// ${data.routeParser}
-
-
-// ${data.routeToString}
+function toPascalCase(str) {
+    var pascal = str.replace(/(\-\w)/g, function (m) { return m[1].toUpperCase(); });
+    return pascal.charAt(0).toUpperCase() + pascal.slice(1)
+}
+function toCamelCase(str) {
+    var pascal = str.replace(/(\-\w)/g, function (m) { return m[1].toUpperCase(); });
+    return pascal.charAt(0).toLowerCase() + pascal.slice(1)
+}
