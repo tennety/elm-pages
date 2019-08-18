@@ -86,7 +86,7 @@ function generate(scanned) {
             captureRouteRecord(pathFragments, scanned[i].path, assetsRecord)
         }
     }
-    return formatFullElmFile({
+    return {
         exposing: "(simple, Route, all, pages, urlParser, routeToString, assets)",
         routes: toFlatRouteType(allRoutes),
         allRoutes: formatAsElmList("all", allRoutes),
@@ -97,16 +97,22 @@ function generate(scanned) {
         routeToDocExtension: formatCaseStatement("toExt", routeToExt),
         routeToSource: formatCaseStatement("toSourcePath", routeToSource),
         assetsRecord: toElmRecord("assets", assetsRecord, false),
-    })
+    }
 }
 
 function run(dir) {
     const documents = askForDocumentDefinitions(dir)
     const scanned = scan(dir, documents)
-    return generate(scanned)
+    return formatFullElmFile(generate(scanned))
 }
 
-module.exports = { run };
+function runInternal(dir) {
+    const documents = askForDocumentDefinitions(dir)
+    const scanned = scan(dir, documents)
+    return renderInternalVersionOfMy(generate(scanned))
+}
+
+module.exports = { run, runInternal };
 
 
 function toFlatRouteType(routes) {
@@ -265,7 +271,9 @@ simple config =
         { init =
             \\flags url key ->
                 let
-                    (userModel, userCmd) = config.init []
+                    (userModel, userCmd) =
+                        -- TODO, render all metadata, reporting any parinsg errors
+                        config.init []
                 in
                 (( emptyCache url key
                  , userModel
@@ -274,8 +282,11 @@ simple config =
                 )
         , view =
             \\( cached, model ) ->
-                { title = ""
-                , body = [ Html.map UserMsg (Html.Lazy.lazy2 config.view cached.current model) ]
+                let
+                    {body, title} = config.view cached.current model
+                in
+                { title = title
+                , body = List.map (Html.map UserMsg) body
                 }
         , update =
             update config.documents config.update 
@@ -566,4 +577,126 @@ function toPascalCase(str) {
 function toCamelCase(str) {
     var pascal = str.replace(/(\-\w)/g, function (m) { return m[1].toUpperCase(); });
     return pascal.charAt(0).toLowerCase() + pascal.slice(1)
+}
+
+
+
+
+
+/*
+
+    This version of the renderer is intended to be API compatible with the normal `My.elm`,
+    However this version is made exclusively so that elm-pages can ask it questions
+
+
+*/
+function renderInternalVersionOfMy(data) {
+    return `port module My exposing ${data.exposing}
+
+{-| -}
+
+import Browser
+import Browser.Navigation
+import Json.Encode
+import Json.Decode
+import Pages
+import Url exposing (Url)
+import Url.Parser as Url exposing ((</>), Parser, s, string)
+import Http
+import Html exposing (Html)
+import Html.Lazy
+import Url.Builder
+import Url.Parser
+
+
+{-| Send messages to the compile time renderer.
+-}
+port toCompileTimeRenderer : Json.Encode.Value -> Cmd msg
+
+
+encodeForRenderer docs =
+    Json.Encode.string "Hello!"
+
+simple :
+    { init : List metadata -> ( model, Cmd msg )
+    , view : Maybe (Page metadata body) -> model -> Html msg
+    , update : msg -> model -> ( model, Cmd msg )
+    , subscriptions : model -> Sub msg
+    , documents : List (Pages.Document metadata body)
+    }
+    -> Platform.Program flags (Cache metadata body, model) (Msg msg body)
+simple config =
+    Platform.worker
+        { init =
+            \\flags ->
+                let
+                    (userModel, _) =
+                        config.init []
+                in
+                (( Cache
+                 , userModel
+                 )
+                , toCompileTimeRenderer (encodeForRenderer config.documents)
+                )
+        , update =
+            \\msg model ->
+                (model, Cmd.none)
+        , subscriptions =
+            \\(cache, model) ->
+                -- compileTimeRendererWants CompileTimeRendererWants
+                Sub.none
+        }
+
+
+type Msg userMsg body
+    = SendToCompileTimeRenderer Json.Encode.Value
+
+{-| We've stubbed these to ensure our interface is complete,  -}
+type Cache metadata body = Cache
+
+type alias Page metadata body =
+    { route : Route
+    , metadata : metadata
+    , body : RemoteData body
+    }
+
+
+type RemoteData data
+    = NotAsked
+    | Loading
+    | Failure data
+    | Success data
+
+{- PAGES -}
+
+${ data.routes}
+
+
+${ data.allRoutes}
+
+
+${ data.routeRecord}
+
+
+${ data.urlParser}
+
+
+${ data.urlToString}
+
+
+${ data.routeToMetadata}
+
+
+${ data.routeToDocExtension}
+
+
+${ data.routeToSource}
+
+
+{- ASSETS -}
+
+
+${ data.assetsRecord}
+
+`
 }
