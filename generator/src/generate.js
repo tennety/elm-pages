@@ -85,10 +85,9 @@ function generate(scanned) {
         } else {
             captureRouteRecord(pathFragments, scanned[i].path, assetsRecord)
         }
-
     }
     return formatFullElmFile({
-        exposing: "(simple, Route, all, pages, parser, routeToString, assets)",
+        exposing: "(simple, Route, all, pages, urlParser, routeToString, assets)",
         routes: toFlatRouteType(allRoutes),
         allRoutes: formatAsElmList("all", allRoutes),
         routeRecord: toElmRecord("pages", routeRecord, true),
@@ -202,7 +201,7 @@ function formatUrlParser(elmType, filepathPieces) {
         .join(", ")
 
     return {
-        toString: `        ${elmType} ->\n            Url.Builder.absolute[${urlStringList} ][]`,
+        toString: `        ${elmType} ->\n            Url.Builder.absolute [ ${urlStringList} ] []`,
         parser: `Url.map ${elmType} (${urlParser})`
     }
 }
@@ -220,21 +219,27 @@ ${ toString} `
 function formatAsElmUrlParser(pieces) {
     var parser = "    [ " + pieces.map((p) => p.parser).join("\n        , ") + "\n        ]"
 
-    return `parser =\n    Url.oneOf\n    ${parser} `
+    return `urlParser =\n    Url.oneOf\n    ${parser} `
 }
 
 function formatFullElmFile(data) {
-    return `port module Pages.My exposing ${data.exposing}
+    return `port module My exposing ${data.exposing}
 
 {-| -}
 
 import Browser
 import Browser.Navigation
 import Json.Encode
+import Json.Decode
 import Pages
 import Url exposing (Url)
 import Url.Parser as Url exposing ((</>), Parser, s, string)
 import Http
+import Html exposing (Html)
+import Html.Lazy
+import Url.Builder
+import Url.Parser
+
 
 {-| Used to tell the compile-time renderer what html headers we want for a page.
 
@@ -244,6 +249,9 @@ Can be used to
 port toCompileTimeRenderer : Json.Encode.Value -> Cmd msg
 
 
+--type alias Program flags model msg metadata body =
+--    Platform.Program flags (Cache metadata body, model) (Msg msg body)
+
 simple :
     { init : List metadata -> ( model, Cmd msg )
     , view : Maybe (Page metadata body) -> model -> Html msg
@@ -251,37 +259,42 @@ simple :
     , subscriptions : model -> Sub msg
     , documents : List (Pages.Document metadata body)
     }
-    -> Platform.Program (Flags userFlags) (Model userModel userMsg metadata body) (Msg userMsg metadata body)
+    -> Platform.Program flags (Cache metadata body, model) (Msg msg body)
 simple config =
     Browser.application
         { init =
             \\flags url key ->
-                ( emptyCache key
-                , config.init []
+                let
+                    (userModel, userCmd) = config.init []
+                in
+                (( emptyCache url key
+                 , userModel
+                 )
+                , Cmd.map UserMsg userCmd
                 )
         , view =
             \\( cached, model ) ->
-                view cached.current model
+                { title = ""
+                , body = [ Html.map UserMsg (Html.Lazy.lazy2 config.view cached.current model) ]
+                }
         , update =
-            \\msg (Model model) ->
-                update config.documents config.update msg model
-                    |> Tuple.mapFirst Model
+            update config.documents config.update 
         , subscriptions =
-            \\(Model model) ->
+            \\(cache, model) ->
                 Sub.batch
-                    [ config.subscriptions model.userModel
-                        |> Sub.map UserMsg
-                    , compileTimeRendererWants CompileTimeRendererWants
+                    [ Sub.map UserMsg (config.subscriptions model) 
+                    -- , compileTimeRendererWants CompileTimeRendererWants
                     ]
         , onUrlChange = UrlChanged
         , onUrlRequest = LinkClicked
         }
 
 
-emptyCache key =
+emptyCache url key =
     { current = Nothing
     , previous = []
     , key = key
+    , url = url
     }
 
 
@@ -305,6 +318,7 @@ type alias Cache metadata body =
     { current : Maybe (Page metadata body)
     , previous : List (Page metadata body)
     , key : Browser.Navigation.Key
+    , url : Url.Url
     }
 
 
@@ -324,64 +338,87 @@ loadPageBody route body cache =
     }
     
 
-gotoCachedRoute : Route -> List (Document metadata body) -> Cache metadata body -> ( Cache metadata body, Cmd Msg )
-gotoCachedRoute route documents cache =
+gotoCachedRoute : 
+    Maybe Route
+    -> List (Pages.Document metadata body)
+    -> Cache metadata body
+    -> ( Cache metadata body, Cmd (Msg msg body) )
+gotoCachedRoute maybeRoute documents cache =
     let
         currentPageIsSame =
-            case cache.current of
-                Nothing ->
-                    False
-
-                Just current ->
-                    current.route == route
+            Maybe.map .route cache.current
+                == maybeRoute
     in
     if currentPageIsSame then
         ( cache, Cmd.none )
 
     else
-        case getDocument route documents of
+        case maybeRoute of
             Nothing ->
-                -- TODO, report error
                 ( cache, Cmd.none )
 
-            Just doc ->
-                let
-                    matchPage page ( found, prevs ) =
-                        case found of
-                            Nothing ->
-                                if page.route == route then
-                                    ( Just page, prevs )
 
-                                else
-                                    ( Nothing, page :: prevs )
+            Just route ->
+                case getDocument route documents of
+                    Nothing ->
+                        -- TODO, report error
+                        ( cache, Cmd.none )
 
-                            Just _ ->
-                                ( found, page :: prevs )
+                    Just doc ->
+                        let
+                            matchPage page ( found, prevs ) =
+                                case found of
+                                    Nothing ->
+                                        if page.route == route then
+                                            ( Just page, prevs )
 
-                    ( maybeExistingPage, newPrevious ) =
-                        List.foldl matchPage ( Nothing, [] ) cache.previous
+                                        else
+                                            ( Nothing, page :: prevs )
 
-                    newCurrentPage =
-                        Maybe.withDefault
-                            { route = route
-                            , metadata = doc.metadata (toMetadata route)
-                            , body = Loading
+                                    Just _ ->
+                                        ( found, page :: prevs )
+
+
+                            ( newCurrentPage, newPrevious ) =
+                                List.foldl matchPage ( Nothing, [] ) cache.previous
+                                    |> Tuple.mapFirst createNewPage
+
+
+                            createNewPage maybeExistingPage =
+                                case maybeExistingPage of
+                                    Nothing ->
+                                        case Json.Decode.decodeString doc.metadata (toMetadata route) of
+                                            Ok newMeta ->
+                                                Just
+                                                    { route = route
+                                                    , metadata = newMeta
+                                                    , body = Loading
+                                                    }
+
+                                            Err err ->
+                                                Nothing
+
+                                    Just existing ->
+                                        maybeExistingPage
+
+                        in
+                        ( { cache
+                            | current = newCurrentPage
+                            , previous = List.reverse newPrevious
                             }
-                            maybeExistingPage
-                in
-                ( { cache
-                    | current = newCurrentPage
-                    , previous = List.reverse newPrevious
-                    }
-                , case newCurrentPage.body of
-                    Loading ->
-                        getPage GotPage route doc
+                        , case Maybe.map .body newCurrentPage of
+                            Just Loading ->
+                                getPage (GotPageBody route) route doc
 
-                    _ ->
-                        Cmd.none
-                )
+                            _ ->
+                                Cmd.none
+                        )
 
-
+getPage : 
+    (Result Http.Error body -> Msg userMsg body)
+    -> Route
+    -> Pages.Document metadata body
+    -> Cmd (Msg userMsg body)
 getPage toMsg route doc =
     Http.get
         { url = toSourcePath route
@@ -402,16 +439,16 @@ getPage toMsg route doc =
                             Err (Http.BadStatus metadata.statusCode)
 
                         Http.GoodStatus_ metadata body ->
-                            case doc.body (doc.metadata (toMetadata route)) body of
-                                Ok value ->
-                                    Ok value
+                            case Json.Decode.decodeString doc.metadata (toMetadata route) of
+                                Ok docMetadata ->
+                                    Ok (doc.body docMetadata body)
 
                                 Err err ->
-                                    Err (Http.BadBody "Unable to parse body.")
+                                    Err (Http.BadBody "Unable to parse metadata.")
         }
 
 
-getDocument : Route -> List (Document metadata body) -> Maybe (Document metadata body)
+getDocument : Route -> List (Pages.Document metadata body) -> Maybe (Pages.Document metadata body)
 getDocument route docs =
     let
         ext =
@@ -421,7 +458,7 @@ getDocument route docs =
         |> List.head
 
 
-type Msg userMsg metadata body
+type Msg userMsg body
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | UserMsg userMsg
@@ -429,11 +466,11 @@ type Msg userMsg metadata body
 
 
 update :
-    List (Document metadata body)
+    List (Pages.Document metadata body)
     -> (userMsg -> model -> ( model, Cmd userMsg ))
-    -> Msg userMsg metadata body
-    -> ( Cache metadata body, Model )
-    -> ( ( Cache metadata body, Model ), Cmd Msg )
+    -> Msg userMsg body
+    -> ( Cache metadata body, model )
+    -> ( ( Cache metadata body, model ), Cmd (Msg userMsg body))
 update documents userUpdate msg (( cache, model ) as existing) =
     case msg of
         UserMsg userMsg ->
@@ -450,7 +487,7 @@ update documents userUpdate msg (( cache, model ) as existing) =
                 Browser.Internal url ->
                     let
                         navigatingToSamePage =
-                            url.path == model.url.path
+                            url.path == cache.url.path
                     in
                     if navigatingToSamePage then
                         -- this is a workaround for an issue with anchor fragment navigation
@@ -458,7 +495,7 @@ update documents userUpdate msg (( cache, model ) as existing) =
                         ( existing, Browser.Navigation.load (Url.toString url) )
 
                     else
-                        ( existing, Browser.Navigation.pushUrl model.key (Url.toString url) )
+                        ( existing, Browser.Navigation.pushUrl cache.key (Url.toString url) )
 
                 Browser.External href ->
                     ( existing, Browser.Navigation.load href )
@@ -466,9 +503,9 @@ update documents userUpdate msg (( cache, model ) as existing) =
         UrlChanged url ->
             let
                 ( newCache, loadPageIfNecessary ) =
-                    gotoCachedRoute (parser url) documents cache
+                    gotoCachedRoute (Url.Parser.parse urlParser url) documents cache
             in
-            ( ( newCache, model )
+            ( ( { newCache | url = url }, model )
             , loadPageIfNecessary
             )
 
