@@ -22,7 +22,7 @@ isValidRoute : String -> Result String ()
 isValidRoute route =
     let
         validRoutes =
-            List.map PagePath.toString allPages
+            (List.map PagePath.toString allPages) ++ (List.map ImagePath.toString allImages)
     in
     if
         (route |> String.startsWith "http://")
